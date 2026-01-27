@@ -68,13 +68,14 @@ else()
   message(STATUS "OpenMP not found, proceeding without it")
 endif()
 
-# Check for mimalloc support
-find_package(mimalloc QUIET)
-if(mimalloc_FOUND)
-  message(STATUS "mimalloc found")
-else()
-  message(STATUS "mimalloc not found, proceeding without it")
-endif()
+# Check for mimalloc support (disabled)
+# find_package(mimalloc QUIET)
+# if(mimalloc_FOUND)
+#   message(STATUS "mimalloc found")
+# else()
+#   message(STATUS "mimalloc not found, proceeding without it")
+# endif()
+set(mimalloc_FOUND FALSE)
 
 # Find catkin and required dependencies
 find_package(catkin REQUIRED COMPONENTS
