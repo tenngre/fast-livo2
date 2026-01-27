@@ -1,0 +1,23 @@
+<launch>
+<!-- Launch file for lightweight point cloud visualization without RVIZ -->
+
+    <!-- Include the main mapping launch file -->
+    <include file="$(find fast_livo)/launch/mapping_mid360.launch">
+        <arg name="rviz" value="false" />
+    </include>
+
+    <!-- PointCloud Optimizer Node -->
+    <node pkg="fast_livo" type="pointcloud_optimizer" name="pointcloud_optimizer" output="screen">
+        <param name="voxel_size" value="0.2" />
+        <param name="publish_rate" value="5" />
+    </node>
+
+    <!-- Lightweight Visualizer Node -->
+    <node pkg="fast_livo" type="lightweight_visualizer" name="lightweight_visualizer" output="screen">
+        <param name="point_size" value="2.0" />
+        <param name="fov" value="60.0" />
+        <param name="near_plane" value="0.1" />
+        <param name="far_plane" value="1000.0" />
+    </node>
+
+</launch>
