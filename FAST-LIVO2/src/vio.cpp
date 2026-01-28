@@ -224,6 +224,45 @@ void VIOManager::getImagePatch(cv::Mat img, V2D pc, float *patch_tmp, int level)
   }
 }
 
+void VIOManager::updateFeatVoxelAccess(const VOXEL_LOCATION &loc)
+{
+  // Update LRU cache
+  if (feat_map_iters_.find(loc) != feat_map_iters_.end())
+  {
+    // Move to front if already exists
+    feat_map_cache_.erase(feat_map_iters_[loc]);
+    feat_map_cache_.push_front(loc);
+    feat_map_iters_[loc] = feat_map_cache_.begin();
+  }
+  else
+  {
+    // Add to front if new
+    feat_map_cache_.push_front(loc);
+    feat_map_iters_[loc] = feat_map_cache_.begin();
+    // Ensure capacity
+    ensureFeatCapacity();
+  }
+}
+
+void VIOManager::ensureFeatCapacity()
+{
+  while (feat_map_cache_.size() > max_feat_voxel_num_)
+  {
+    // Remove least recently used
+    VOXEL_LOCATION old_loc = feat_map_cache_.back();
+    feat_map_cache_.pop_back();
+    feat_map_iters_.erase(old_loc);
+    
+    // Remove from feat_map_
+    auto it = feat_map.find(old_loc);
+    if (it != feat_map.end())
+    {
+      delete it->second;
+      feat_map.erase(it);
+    }
+  }
+}
+
 void VIOManager::insertPointIntoVoxelMap(VisualPoint *pt_new)
 {
   V3D pt_w(pt_new->pos_[0], pt_new->pos_[1], pt_new->pos_[2]);
@@ -240,12 +279,16 @@ void VIOManager::insertPointIntoVoxelMap(VisualPoint *pt_new)
   {
     iter->second->voxel_points.push_back(pt_new);
     iter->second->count++;
+    // Update LRU cache
+    updateFeatVoxelAccess(position);
   }
   else
   {
     VOXEL_POINTS *ot = new VOXEL_POINTS(0);
     ot->voxel_points.push_back(pt_new);
     feat_map[position] = ot;
+    // Update LRU cache
+    updateFeatVoxelAccess(position);
   }
 }
 

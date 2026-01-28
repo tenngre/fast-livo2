@@ -128,6 +128,11 @@ public:
   unordered_map<int, Warp *> warp_map;
   vector<VisualPoint *> retrieve_voxel_points;
   vector<pointWithVar> append_voxel_points;
+  
+  // LRU cache for feat_map
+  std::list<VOXEL_LOCATION> feat_map_cache_;
+  std::unordered_map<VOXEL_LOCATION, std::list<VOXEL_LOCATION>::iterator> feat_map_iters_;
+  int max_feat_voxel_num_ = 10000;
   FramePtr new_frame_;
   cv::Mat img_cp, img_rgb, img_test;
 
@@ -170,6 +175,10 @@ public:
   double calculateNCC(float *ref_patch, float *cur_patch, int patch_size);
   int getBestSearchLevel(const Matrix2d &A_cur_ref, const int max_level);
   V3F getInterpolatedPixel(cv::Mat img, V2D pc);
+  
+  // LRU cache methods for feat_map
+  void updateFeatVoxelAccess(const VOXEL_LOCATION &loc);
+  void ensureFeatCapacity();
   
   // void resetRvizDisplay();
   // deque<VisualPoint *> map_cur_frame;

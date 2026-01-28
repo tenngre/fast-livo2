@@ -50,6 +50,9 @@ void loadVoxelConfig(ros::NodeHandle &nh, VoxelMapConfig &voxel_config)
   nh.param<bool>("local_map/map_sliding_en", voxel_config.map_sliding_en, false);
   nh.param<int>("local_map/half_map_size", voxel_config.half_map_size, 100);
   nh.param<double>("local_map/sliding_thresh", voxel_config.sliding_thresh, 8);
+  
+  // LRU cache config
+  nh.param<int>("local_map/max_voxel_num", voxel_config.max_voxel_num, 20000);
 }
 
 void VoxelOctoTree::init_plane(const std::vector<pointWithVar> &points, VoxelPlane *plane)
@@ -570,6 +573,8 @@ void VoxelMapManager::BuildVoxelMap()
     {
       voxel_map_[position]->temp_points_.push_back(p_v);
       voxel_map_[position]->new_points_++;
+      // Update LRU cache
+      updateVoxelAccess(position);
     }
     else
     {
@@ -582,6 +587,8 @@ void VoxelMapManager::BuildVoxelMap()
       voxel_map_[position]->temp_points_.push_back(p_v);
       voxel_map_[position]->new_points_++;
       voxel_map_[position]->layer_init_num_ = layer_init_num;
+      // Update LRU cache
+      updateVoxelAccess(position);
     }
   }
   for (auto iter = voxel_map_.begin(); iter != voxel_map_.end(); ++iter)
@@ -625,7 +632,12 @@ void VoxelMapManager::UpdateVoxelMap(const std::vector<pointWithVar> &input_poin
     }
     VOXEL_LOCATION position((int64_t)loc_xyz[0], (int64_t)loc_xyz[1], (int64_t)loc_xyz[2]);
     auto iter = voxel_map_.find(position);
-    if (iter != voxel_map_.end()) { voxel_map_[position]->UpdateOctoTree(p_v); }
+    if (iter != voxel_map_.end()) 
+    {
+      voxel_map_[position]->UpdateOctoTree(p_v);
+      // Update LRU cache
+      updateVoxelAccess(position);
+    }
     else
     {
       VoxelOctoTree *octo_tree = new VoxelOctoTree(max_layer, 0, layer_init_num[0], max_points_num, planer_threshold);
@@ -636,6 +648,8 @@ void VoxelMapManager::UpdateVoxelMap(const std::vector<pointWithVar> &input_poin
       voxel_map_[position]->voxel_center_[1] = (0.5 + position.y) * voxel_size;
       voxel_map_[position]->voxel_center_[2] = (0.5 + position.z) * voxel_size;
       voxel_map_[position]->UpdateOctoTree(p_v);
+      // Update LRU cache
+      updateVoxelAccess(position);
     }
   }
 }
@@ -687,19 +701,28 @@ void VoxelMapManager::BuildResidualListOMP(std::vector<pointWithVar> &pv_list, s
         if (loc_xyz[2] > (current_octo->voxel_center_[2] + current_octo->quater_length_)) { near_position.z = near_position.z + 1; }
         else if (loc_xyz[2] < (current_octo->voxel_center_[2] - current_octo->quater_length_)) { near_position.z = near_position.z - 1; }
         auto iter_near = voxel_map_.find(near_position);
-        if (iter_near != voxel_map_.end()) { build_single_residual(pv, iter_near->second, 0, is_sucess, prob, single_ptpl); }
+        if (iter_near != voxel_map_.end()) 
+        {
+          build_single_residual(pv, iter_near->second, 0, is_sucess, prob, single_ptpl);
+          // Update LRU cache for near voxel
+          mylock.lock();
+          updateVoxelAccess(near_position);
+          mylock.unlock();
+        }
       }
       if (is_sucess)
       {
         mylock.lock();
         useful_ptpl[i] = true;
         all_ptpl_list[i] = single_ptpl;
+        updateVoxelAccess(position);
         mylock.unlock();
       }
       else
       {
         mylock.lock();
         useful_ptpl[i] = false;
+        updateVoxelAccess(position);
         mylock.unlock();
       }
     }
@@ -947,25 +970,77 @@ void VoxelMapManager::mapSliding()
   return;
 }
 
+void VoxelMapManager::updateVoxelAccess(const VOXEL_LOCATION &loc)
+{
+  // Update LRU cache
+  if (voxel_map_iters_.find(loc) != voxel_map_iters_.end())
+  {
+    // Move to front if already exists
+    voxel_map_cache_.erase(voxel_map_iters_[loc]);
+    voxel_map_cache_.push_front(loc);
+    voxel_map_iters_[loc] = voxel_map_cache_.begin();
+  }
+  else
+  {
+    // Add to front if new
+    voxel_map_cache_.push_front(loc);
+    voxel_map_iters_[loc] = voxel_map_cache_.begin();
+    // Ensure capacity
+    ensureCapacity();
+  }
+}
+
+void VoxelMapManager::ensureCapacity()
+{
+  while (voxel_map_cache_.size() > config_setting_.max_voxel_num)
+  {
+    // Remove least recently used
+    VOXEL_LOCATION old_loc = voxel_map_cache_.back();
+    voxel_map_cache_.pop_back();
+    voxel_map_iters_.erase(old_loc);
+    
+    // Remove from voxel_map_
+    auto it = voxel_map_.find(old_loc);
+    if (it != voxel_map_.end())
+    {
+      delete it->second;
+      voxel_map_.erase(it);
+    }
+  }
+}
+
 void VoxelMapManager::clearMemOutOfMap(const int& x_max,const int& x_min,const int& y_max,const int& y_min,const int& z_max,const int& z_min )
 {
   int delete_voxel_cout = 0;
-  // double delete_time = 0;
-  // double last_delete_time = 0;
-  for (auto it = voxel_map_.begin(); it != voxel_map_.end(); )
+  std::vector<VOXEL_LOCATION> to_remove;
+  
+  // First collect voxels to remove
+  for (auto it = voxel_map_.begin(); it != voxel_map_.end(); ++it)
   {
     const VOXEL_LOCATION& loc = it->first;
     bool should_remove = loc.x > x_max || loc.x < x_min || loc.y > y_max || loc.y < y_min || loc.z > z_max || loc.z < z_min;
     if (should_remove){
-      // last_delete_time = omp_get_wtime();
-      delete it->second;
-      it = voxel_map_.erase(it);
-      // delete_time += omp_get_wtime() - last_delete_time;
+      to_remove.push_back(loc);
       delete_voxel_cout++;
-    } else {
-      ++it;
     }
   }
+  
+  // Then remove them
+  for (const auto& loc : to_remove)
+  {
+    auto it = voxel_map_.find(loc);
+    if (it != voxel_map_.end())
+    {
+      delete it->second;
+      voxel_map_.erase(it);
+      // Also remove from LRU cache
+      if (voxel_map_iters_.find(loc) != voxel_map_iters_.end())
+      {
+        voxel_map_cache_.erase(voxel_map_iters_[loc]);
+        voxel_map_iters_.erase(loc);
+      }
+    }
+  }
+  
   std::cout<<RED<<"[DEBUG]: Delete "<<delete_voxel_cout<<" root voxels"<<RESET<<"\n";
-  // std::cout<<RED<<"[DEBUG]: Delete "<<delete_voxel_cout<<" voxels using "<<delete_time<<" s"<<RESET<<"\n";
 }

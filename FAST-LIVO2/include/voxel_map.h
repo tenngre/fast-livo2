@@ -49,6 +49,9 @@ typedef struct VoxelMapConfig
   double sliding_thresh;
   bool map_sliding_en;
   int half_map_size;
+  
+  // config of LRU cache
+  int max_voxel_num;
 } VoxelMapConfig;
 
 typedef struct PointToPlane
@@ -192,6 +195,10 @@ public:
   int current_frame_id_ = 0;
   ros::Publisher voxel_map_pub_;
   std::unordered_map<VOXEL_LOCATION, VoxelOctoTree *> voxel_map_;
+  
+  // LRU cache implementation
+  std::list<VOXEL_LOCATION> voxel_map_cache_;
+  std::unordered_map<VOXEL_LOCATION, std::list<VOXEL_LOCATION>::iterator> voxel_map_iters_;
 
   PointCloudXYZI::Ptr feats_undistort_;
   PointCloudXYZI::Ptr feats_down_body_;
@@ -244,6 +251,10 @@ public:
 
   void mapSliding();
   void clearMemOutOfMap(const int& x_max,const int& x_min,const int& y_max,const int& y_min,const int& z_max,const int& z_min );
+  
+  // LRU cache methods
+  void updateVoxelAccess(const VOXEL_LOCATION &loc);
+  void ensureCapacity();
 
 private:
   void GetUpdatePlane(const VoxelOctoTree *current_octo, const int pub_max_voxel_layer, std::vector<VoxelPlane> &plane_list);
