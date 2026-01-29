@@ -15,6 +15,7 @@ which is included as part of this source code package.
 
 #include "voxel_map.h"
 #include "feature.h"
+#include "gpu_acceleration.h"
 #include <opencv2/imgproc/imgproc_c.h>
 #include <pcl/filters/voxel_grid.h>
 #include <set>
@@ -135,6 +136,9 @@ public:
   int max_feat_voxel_num_ = 10000;
   FramePtr new_frame_;
   cv::Mat img_cp, img_rgb, img_test;
+  
+  // GPU acceleration
+  GPUAcceleration gpu_accel_;
 
   enum CellType
   {

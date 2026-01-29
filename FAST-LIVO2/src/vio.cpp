@@ -42,6 +42,14 @@ void VIOManager::initializeVIO()
 {
   visual_submap = new SubSparseMap;
 
+  // 初始化GPU加速
+  bool gpu_success = gpu_accel_.initialize();
+  if (gpu_success) {
+    printf("GPU acceleration initialized successfully\n");
+  } else {
+    printf("GPU acceleration not available, using CPU fallback\n");
+  }
+
   fx = cam->fx();
   fy = cam->fy();
   cx = cam->cx();
@@ -202,24 +210,30 @@ void VIOManager::computeProjectionJacobian(V3D p, MD(2, 3) & J)
 
 void VIOManager::getImagePatch(cv::Mat img, V2D pc, float *patch_tmp, int level)
 {
-  const float u_ref = pc[0];
-  const float v_ref = pc[1];
-  const int scale = (1 << level);
-  const int u_ref_i = floorf(pc[0] / scale) * scale;
-  const int v_ref_i = floorf(pc[1] / scale) * scale;
-  const float subpix_u_ref = (u_ref - u_ref_i) / scale;
-  const float subpix_v_ref = (v_ref - v_ref_i) / scale;
-  const float w_ref_tl = (1.0 - subpix_u_ref) * (1.0 - subpix_v_ref);
-  const float w_ref_tr = subpix_u_ref * (1.0 - subpix_v_ref);
-  const float w_ref_bl = (1.0 - subpix_u_ref) * subpix_v_ref;
-  const float w_ref_br = subpix_u_ref * subpix_v_ref;
-  for (int x = 0; x < patch_size; x++)
-  {
-    uint8_t *img_ptr = (uint8_t *)img.data + (v_ref_i - patch_size_half * scale + x * scale) * width + (u_ref_i - patch_size_half * scale);
-    for (int y = 0; y < patch_size; y++, img_ptr += scale)
+  // 尝试使用GPU加速
+  if (gpu_accel_.isSupported()) {
+    gpu_accel_.getImagePatchGPU(img, pc, patch_tmp, level, patch_size, patch_size_total);
+  } else {
+    // CPU后备实现
+    const float u_ref = pc[0];
+    const float v_ref = pc[1];
+    const int scale = (1 << level);
+    const int u_ref_i = floorf(pc[0] / scale) * scale;
+    const int v_ref_i = floorf(pc[1] / scale) * scale;
+    const float subpix_u_ref = (u_ref - u_ref_i) / scale;
+    const float subpix_v_ref = (v_ref - v_ref_i) / scale;
+    const float w_ref_tl = (1.0 - subpix_u_ref) * (1.0 - subpix_v_ref);
+    const float w_ref_tr = subpix_u_ref * (1.0 - subpix_v_ref);
+    const float w_ref_bl = (1.0 - subpix_u_ref) * subpix_v_ref;
+    const float w_ref_br = subpix_u_ref * subpix_v_ref;
+    for (int x = 0; x < patch_size; x++)
     {
-      patch_tmp[patch_size_total * level + x * patch_size + y] =
-          w_ref_tl * img_ptr[0] + w_ref_tr * img_ptr[scale] + w_ref_bl * img_ptr[scale * width] + w_ref_br * img_ptr[scale * width + scale];
+      uint8_t *img_ptr = (uint8_t *)img.data + (v_ref_i - patch_size_half * scale + x * scale) * width + (u_ref_i - patch_size_half * scale);
+      for (int y = 0; y < patch_size; y++, img_ptr += scale)
+      {
+        patch_tmp[patch_size_total * level + x * patch_size + y] =
+            w_ref_tl * img_ptr[0] + w_ref_tr * img_ptr[scale] + w_ref_bl * img_ptr[scale * width] + w_ref_br * img_ptr[scale * width + scale];
+      }
     }
   }
 }
@@ -336,26 +350,34 @@ void VIOManager::warpAffine(const Matrix2d &A_cur_ref, const cv::Mat &img_ref, c
                                const int pyramid_level, const int halfpatch_size, float *patch)
 {
   const int patch_size = halfpatch_size * 2;
-  const Matrix2f A_ref_cur = A_cur_ref.inverse().cast<float>();
-  if (isnan(A_ref_cur(0, 0)))
-  {
-    printf("Affine warp is NaN, probably camera has no translation\n"); // TODO
-    return;
-  }
-
-  float *patch_ptr = patch;
-  for (int y = 0; y < patch_size; ++y)
-  {
-    for (int x = 0; x < patch_size; ++x) //, ++patch_ptr)
+  
+  // 尝试使用GPU加速
+  if (gpu_accel_.isSupported()) {
+    gpu_accel_.warpAffineGPU(A_cur_ref, img_ref, px_ref, level_ref, search_level, pyramid_level, 
+                           halfpatch_size, patch, patch_size, patch_size_total);
+  } else {
+    // CPU后备实现
+    const Matrix2f A_ref_cur = A_cur_ref.inverse().cast<float>();
+    if (isnan(A_ref_cur(0, 0)))
     {
-      Vector2f px_patch(x - halfpatch_size, y - halfpatch_size);
-      px_patch *= (1 << search_level);
-      px_patch *= (1 << pyramid_level);
-      const Vector2f px(A_ref_cur * px_patch + px_ref.cast<float>());
-      if (px[0] < 0 || px[1] < 0 || px[0] >= img_ref.cols - 1 || px[1] >= img_ref.rows - 1)
-        patch_ptr[patch_size_total * pyramid_level + y * patch_size + x] = 0;
-      else
-        patch_ptr[patch_size_total * pyramid_level + y * patch_size + x] = (float)vk::interpolateMat_8u(img_ref, px[0], px[1]);
+      printf("Affine warp is NaN, probably camera has no translation\n"); // TODO
+      return;
+    }
+
+    float *patch_ptr = patch;
+    for (int y = 0; y < patch_size; ++y)
+    {
+      for (int x = 0; x < patch_size; ++x) //, ++patch_ptr)
+      {
+        Vector2f px_patch(x - halfpatch_size, y - halfpatch_size);
+        px_patch *= (1 << search_level);
+        px_patch *= (1 << pyramid_level);
+        const Vector2f px(A_ref_cur * px_patch + px_ref.cast<float>());
+        if (px[0] < 0 || px[1] < 0 || px[0] >= img_ref.cols - 1 || px[1] >= img_ref.rows - 1)
+          patch_ptr[patch_size_total * pyramid_level + y * patch_size + x] = 0;
+        else
+          patch_ptr[patch_size_total * pyramid_level + y * patch_size + x] = (float)vk::interpolateMat_8u(img_ref, px[0], px[1]);
+      }
     }
   }
 }
@@ -375,21 +397,27 @@ int VIOManager::getBestSearchLevel(const Matrix2d &A_cur_ref, const int max_leve
 
 double VIOManager::calculateNCC(float *ref_patch, float *cur_patch, int patch_size)
 {
-  double sum_ref = std::accumulate(ref_patch, ref_patch + patch_size, 0.0);
-  double mean_ref = sum_ref / patch_size;
+  // 尝试使用GPU加速
+  if (gpu_accel_.isSupported()) {
+    return gpu_accel_.calculateNCCGPU(ref_patch, cur_patch, patch_size);
+  } else {
+    // CPU后备实现
+    double sum_ref = std::accumulate(ref_patch, ref_patch + patch_size, 0.0);
+    double mean_ref = sum_ref / patch_size;
 
-  double sum_cur = std::accumulate(cur_patch, cur_patch + patch_size, 0.0);
-  double mean_curr = sum_cur / patch_size;
+    double sum_cur = std::accumulate(cur_patch, cur_patch + patch_size, 0.0);
+    double mean_curr = sum_cur / patch_size;
 
-  double numerator = 0, demoniator1 = 0, demoniator2 = 0;
-  for (int i = 0; i < patch_size; i++)
-  {
-    double n = (ref_patch[i] - mean_ref) * (cur_patch[i] - mean_curr);
-    numerator += n;
-    demoniator1 += (ref_patch[i] - mean_ref) * (ref_patch[i] - mean_ref);
-    demoniator2 += (cur_patch[i] - mean_curr) * (cur_patch[i] - mean_curr);
+    double numerator = 0, demoniator1 = 0, demoniator2 = 0;
+    for (int i = 0; i < patch_size; i++)
+    {
+      double n = (ref_patch[i] - mean_ref) * (cur_patch[i] - mean_curr);
+      numerator += n;
+      demoniator1 += (ref_patch[i] - mean_ref) * (ref_patch[i] - mean_ref);
+      demoniator2 += (cur_patch[i] - mean_curr) * (cur_patch[i] - mean_curr);
+    }
+    return numerator / sqrt(demoniator1 * demoniator2 + 1e-10);
   }
-  return numerator / sqrt(demoniator1 * demoniator2 + 1e-10);
 }
 
 void VIOManager::retrieveFromVisualSparseMap(cv::Mat img, vector<pointWithVar> &pg, const unordered_map<VOXEL_LOCATION, VoxelOctoTree *> &plane_map)

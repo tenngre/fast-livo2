@@ -101,6 +101,18 @@ find_package(OpenCV REQUIRED)
 find_package(Sophus REQUIRED)
 find_package(Boost REQUIRED COMPONENTS thread)
 
+# Find OpenCL
+find_package(OpenCL QUIET)
+if(NOT OpenCL_FOUND)
+  message(STATUS "OpenCL not found via find_package, manually setting paths")
+  set(OpenCL_INCLUDE_DIRS /usr/include)
+  set(OpenCL_LIBRARIES /usr/lib/aarch64-linux-gnu/libOpenCL.so.1)
+  set(OpenCL_FOUND TRUE)
+  message(STATUS "Using manually set OpenCL paths: ${OpenCL_LIBRARIES}")
+else()
+  message(STATUS "OpenCL found: ${OpenCL_LIBRARIES}")
+endif()
+
 set(Sophus_LIBRARIES libSophus.so)
 
 # Define the catkin package
@@ -116,11 +128,12 @@ include_directories(
   ${PCL_INCLUDE_DIRS}
   ${OpenCV_INCLUDE_DIRS}
   ${Sophus_INCLUDE_DIRS}
+  ${OpenCL_INCLUDE_DIRS}
   include
 )
 
 # Add libraries
-add_library(vio src/vio.cpp src/frame.cpp src/visual_point.cpp)
+add_library(vio src/vio.cpp src/frame.cpp src/visual_point.cpp src/gpu_acceleration.cpp)
 add_library(lio src/voxel_map.cpp)
 add_library(pre src/preprocess.cpp)
 add_library(imu_proc src/IMU_Processing.cpp)
@@ -141,6 +154,7 @@ target_link_libraries(fastlivo_mapping
   ${OpenCV_LIBRARIES}
   ${Sophus_LIBRARIES}
   ${Boost_LIBRARIES}
+  ${OpenCL_LIBRARIES}
 )
 
 # Link mimalloc if found
@@ -194,4 +208,60 @@ target_link_libraries(trajectory_evaluator
 # Link mimalloc if found for trajectory evaluator
 if(mimalloc_FOUND)
   target_link_libraries(trajectory_evaluator mimalloc)
+endif()
+
+# Add sensor subscriber node executable
+add_executable(sensor_subscriber_node src/sensor_subscriber_node.cpp)
+
+target_link_libraries(sensor_subscriber_node
+  pre
+  ${catkin_LIBRARIES}
+  ${PCL_LIBRARIES}
+  ${OpenCV_LIBRARIES}
+  ${Sophus_LIBRARIES}
+  ${Boost_LIBRARIES}
+)
+
+# Link mimalloc if found for sensor subscriber node
+if(mimalloc_FOUND)
+  target_link_libraries(sensor_subscriber_node mimalloc)
+endif()
+
+# Add feature extraction node executable
+add_executable(feature_extraction_node src/feature_extraction_node.cpp)
+
+target_link_libraries(feature_extraction_node
+  pre
+  ${catkin_LIBRARIES}
+  ${PCL_LIBRARIES}
+  ${OpenCV_LIBRARIES}
+  ${Sophus_LIBRARIES}
+  ${Boost_LIBRARIES}
+)
+
+# Link mimalloc if found for feature extraction node
+if(mimalloc_FOUND)
+  target_link_libraries(feature_extraction_node mimalloc)
+endif()
+
+# Add localization fusion node executable
+add_executable(localization_fusion_node src/localization_fusion_node.cpp)
+
+target_link_libraries(localization_fusion_node
+  laser_mapping
+  vio
+  lio
+  pre
+  imu_proc
+  ${catkin_LIBRARIES}
+  ${PCL_LIBRARIES}
+  ${OpenCV_LIBRARIES}
+  ${Sophus_LIBRARIES}
+  ${Boost_LIBRARIES}
+  ${OpenCL_LIBRARIES}
+)
+
+# Link mimalloc if found for localization fusion node
+if(mimalloc_FOUND)
+  target_link_libraries(localization_fusion_node mimalloc)
 endif()
